@@ -110,7 +110,7 @@ export function parseGlobalJson(content: string) : globalJsonSDK | string {
             if (sdk.rollForward && sdk.rollForward !== 'latestMajor') {
                 return `allowPrerelease is null with invalid rollForward policy: ${sdk.rollForward}`
             }
-            return new globalJsonSDK(null, rollForwardPolicy.latestMinor, allowPrerelease);
+            return new globalJsonSDK(null, rollForwardPolicy.latestMajor, allowPrerelease);
         }
 
         // No version specified.
