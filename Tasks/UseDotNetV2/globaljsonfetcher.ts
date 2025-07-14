@@ -4,6 +4,7 @@ import * as tl from 'azure-pipelines-task-lib/task';
 import * as JSON5 from 'json5';
 import { DotNetCoreVersionFetcher } from "./versionfetcher";
 import { VersionInfo } from "./models";
+import {strict} from "node:assert";
 
 export class globalJsonFetcher {
 
@@ -43,7 +44,7 @@ export class globalJsonFetcher {
         return filePathsToGlobalJson.map(path => {
             var content = this.readGlobalJson(path);
             if (content != null) {
-                tl.loc("GlobalJsonSdkVersion", content.sdk.version, path);
+                tl.message(tl.loc("GlobalJsonSdkVersion", content.sdk.version, path));
                 return content.sdk.version;
             }
 
@@ -54,24 +55,32 @@ export class globalJsonFetcher {
 
     private readGlobalJson(path: string): GlobalJson | null {
         let globalJson: GlobalJson | null = null;
-        tl.loc("GlobalJsonFound", path);
+        console.log(tl.loc("GlobalJsonFound", path));
         try {
             let fileContent = fileSystem.readFileSync(path);
             // Since here is a buffer, we need to check length property to determine if it is empty. 
             if (!fileContent.length) {
-            // do not throw if globa.json is empty, task need not install any version in such case.
-                tl.loc("GlobalJsonIsEmpty", path);
+                // do not throw if global.json is empty, task need not install any version in such case.
+                // We log a warning and return null.
+                tl.warning(tl.loc("GlobalJsonIsEmpty", path));
                 return null;
             }
 
-            globalJson = (JSON5.parse(fileContent.toString())) as { sdk: { version: string } };
+            globalJson = (JSON5.parse(fileContent.toString())) as {
+                sdk: {
+                    version: string,
+                    rollForward?: string | null,
+                    allowPrerelease?: boolean | null
+                }
+            };
         } catch (error) {
             // we throw if the global.json is invalid
-            throw tl.loc("FailedToReadGlobalJson", path, error); // We don't throw if a global.json is invalid.
+            throw tl.loc("FailedToReadGlobalJson", path, error);
         }
 
         if (globalJson == null || globalJson.sdk == null || globalJson.sdk.version == null) {
-            tl.loc("FailedToReadGlobalJson", path);
+            // Invalid global.json, we log a warning and return null.
+            tl.warning(tl.loc("FailedToReadGlobalJson", path));
             return null;
         }
 
@@ -80,6 +89,80 @@ export class globalJsonFetcher {
 
 }
 
+// Parse the global.json content. Returns a string if the sdk is constant, or an sdk object if the sdk is dynamic.
+// @param content The content of the global.json file.
+// @param path The path to the global.json file, only used for logging.
+export function ParseGlobalJson(content: string, path: string) : string | sdk | null {
+    const globalJson = (JSON5.parse(content)) as {
+        sdk: {
+            version: string,
+            rollForward?: string | null,
+            allowPrerelease?: boolean | null
+        }
+    };
+    if (globalJson == null || globalJson.sdk == null) {
+        // Invalid global.json, we log a warning and return null.
+        tl.warning(tl.loc("FailedToReadGlobalJson", path));
+        return null;
+    }
+    // Parse the input. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
+
+    const sdk = globalJson.sdk;
+    const allowPrerelease = sdk.allowPrerelease ?? true; // Default to true if not specified.
+    const version = sdk.version;
+    const rollForward = sdk.rollForward;
+
+    if (version == null) {
+        // No version specified. Only allowed if rollForward is 'latestMajor' or preRelease is specified.
+        if (rollForward === 'latestMajor' || sdk.allowPrerelease != null) {
+            return {
+                version: null,
+                rollForward: 'latestMajor',
+                allowPrerelease: allowPrerelease
+            } as sdk;
+        }
+        // Invalid global.json, we log a warning and return null.
+        tl.debug(`Failed to read global.json ${path}. No version specified`);
+        tl.warning(tl.loc("FailedToReadGlobalJson", path));
+        return null;
+    }
+    if (version.indexOf('*') === -1) {
+        // The version contains a wildcard, which is not allowed in global.json.
+        tl.error(tl.loc("OnlyExplicitVersionAllowed", path));
+        return null;
+    }
+    switch (rollForward) {
+        case 'feature':
+        case 'minor':
+        case 'major':
+        case 'latestPatch':
+        case 'latestFeature':
+        case 'latestMinor':
+        case 'latestMajor':
+        case 'disable':
+            // Valid roll forward policy.
+            return {
+                version: version,
+                rollForward: rollForward,
+                allowPrerelease: allowPrerelease
+            } as sdk;
+
+        case null:
+            // No roll forward policy specified, default to 'patch'
+            return {
+                version: version,
+                rollForward: 'patch',
+                allowPrerelease: allowPrerelease
+            } as sdk;
+        default:
+            // Invalid roll forward policy.
+            tl.debug(`Failed to read global.json ${path}. Invalid roll forward policy: ${rollForward}`);
+            tl.error(tl.loc("FailedToReadGlobalJson", path));
+            return null;
+    }
+}
+
+// global.json structure. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
 export class GlobalJson {
     constructor(version: string | null = null) {
         if (version != null) {
@@ -90,6 +173,12 @@ export class GlobalJson {
     public sdk: sdk;
 }
 
+// SDK structure. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
 class sdk {
-    public version: string;
+    // SDK version.
+    public version: string | null;
+    // Roll forward policy. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#version
+    public rollForward: "patch" | "feature" | "minor" | "major" | "latestPatch" | "latestFeature" | "latestMinor" | "latestMajor" | "disable";
+    // Allow prerelease versions. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#allowprerelease
+    public allowPrerelease: boolean;
 }
