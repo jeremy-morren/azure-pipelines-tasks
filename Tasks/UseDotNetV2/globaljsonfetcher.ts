@@ -53,8 +53,7 @@ export class globalJsonFetcher {
             .filter(d => d != null); // remove all global.json that can't read
     }
 
-    private readGlobalJson(path: string): GlobalJson | null {
-        let globalJson: GlobalJson | null = null;
+    private readGlobalJson(path: string): globalJsonSDK | null {
         console.log(tl.loc("GlobalJsonFound", path));
         try {
             let fileContent = fileSystem.readFileSync(path);
@@ -66,25 +65,11 @@ export class globalJsonFetcher {
                 return null;
             }
 
-            globalJson = (JSON5.parse(fileContent.toString())) as {
-                sdk: {
-                    version: string,
-                    rollForward?: string | null,
-                    allowPrerelease?: boolean | null
-                }
-            };
+            return parseGlobalJson(fileContent.toString(), path);
         } catch (error) {
-            // we throw if the global.json is invalid
+            // Failed to read global.json, throw an error.
             throw tl.loc("FailedToReadGlobalJson", path, error);
         }
-
-        if (globalJson == null || globalJson.sdk == null || globalJson.sdk.version == null) {
-            // Invalid global.json, we log a warning and return null.
-            tl.warning(tl.loc("FailedToReadGlobalJson", path));
-            return null;
-        }
-
-        return globalJson;
     }
 
 }
@@ -92,7 +77,7 @@ export class globalJsonFetcher {
 // Parse the global.json content. Returns a string if the sdk is constant, or an sdk object if the sdk is dynamic.
 // @param content The content of the global.json file.
 // @param path The path to the global.json file, only used for logging.
-export function ParseGlobalJson(content: string, path: string) : string | sdk | null {
+export function parseGlobalJson(content: string, path: string) : globalJsonSDK | null {
     const globalJson = (JSON5.parse(content)) as {
         sdk: {
             version: string,
@@ -107,53 +92,79 @@ export function ParseGlobalJson(content: string, path: string) : string | sdk | 
     }
     // Parse the input. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
 
-    const sdk = globalJson.sdk;
-    const allowPrerelease = sdk.allowPrerelease ?? true; // Default to true if not specified.
-    const version = sdk.version;
-    const rollForward = sdk.rollForward;
+    const versionStr = globalJson.sdk.version;
+    const allowPrerelease = globalJson.sdk.allowPrerelease ?? true; // Default to true if not specified.
+    const rollForward = globalJson.sdk.rollForward ?? 'patch'; // Default to 'patch' if not specified.
 
-    if (version == null) {
+    if (versionStr == null) {
         // No version specified. Only allowed if rollForward is 'latestMajor' or preRelease is specified.
-        if (rollForward === 'latestMajor' || sdk.allowPrerelease != null) {
+        if (rollForward === 'latestMajor') {
+            // If rollForward is 'latestMajor', we can use any sdk.
             return {
                 version: null,
                 rollForward: 'latestMajor',
                 allowPrerelease: allowPrerelease
-            } as sdk;
+            } as globalJsonSDK;
         }
+
+        if (globalJson.sdk.allowPrerelease !== null) {
+            // If preRelease is specified, we can use any sdk.
+            // Roll forward must be 'latestMajor' or null
+            if (rollForward !== null && rollForward !== 'latestMajor') {
+                tl.debug(`Failed to read global.json ${path}. allowPrerelease is null with invalid rollForward policy: ${rollForward}`);
+                tl.error(tl.loc("FailedToReadGlobalJson", path));
+                return null;
+            }
+            return {
+                version: null,
+                rollForward: 'latestMajor',
+                allowPrerelease: allowPrerelease
+            } as globalJsonSDK;
+        }
+
         // Invalid global.json, we log a warning and return null.
         tl.debug(`Failed to read global.json ${path}. No version specified`);
         tl.warning(tl.loc("FailedToReadGlobalJson", path));
         return null;
     }
-    if (version.indexOf('*') === -1) {
-        // The version contains a wildcard, which is not allowed in global.json.
-        tl.error(tl.loc("OnlyExplicitVersionAllowed", path));
+    const version = versionStr.split('.').map(parseInt);
+    if (version.length < 2 || version.length > 3) {
+        // Invalid version format. Must be in the form of 'major.minor' or 'major.minor.patch'.
+        tl.debug(`Failed to read global.json ${path}. Invalid version format: ${version}`);
+        tl.error(tl.loc("FailedToReadGlobalJson", path));
         return null;
     }
+
     switch (rollForward) {
-        case 'feature':
         case 'minor':
         case 'major':
-        case 'latestPatch':
-        case 'latestFeature':
         case 'latestMinor':
         case 'latestMajor':
-        case 'disable':
-            // Valid roll forward policy.
+            // major/minor rollForward, no validation of feature band or patch version needed.
             return {
                 version: version,
                 rollForward: rollForward,
                 allowPrerelease: allowPrerelease
-            } as sdk;
+            } as globalJsonSDK;
 
-        case null:
-            // No roll forward policy specified, default to 'patch'
+        case 'patch':
+        case 'feature':
+        case 'latestPatch':
+        case 'latestFeature':
+        case 'disable':
+            // rollForward is patch/feature, we need to validate the version.
+            // Version should be in format x.y.znn
+            if (version.length !== 3 || version[2] < 100 || version[2] > 999) {
+                // Invalid version format. Must be in the form of 'major.minor.patch'.
+                tl.debug(`Failed to read global.json ${path}. Invalid version format for rollForward policy ${rollForward}: ${version}`);
+                tl.error(tl.loc("FailedToReadGlobalJson", path));
+                return null;
+            }
             return {
                 version: version,
-                rollForward: 'patch',
+                rollForward: rollForward,
                 allowPrerelease: allowPrerelease
-            } as sdk;
+            } as globalJsonSDK;
         default:
             // Invalid roll forward policy.
             tl.debug(`Failed to read global.json ${path}. Invalid roll forward policy: ${rollForward}`);
@@ -162,23 +173,111 @@ export function ParseGlobalJson(content: string, path: string) : string | sdk | 
     }
 }
 
-// global.json structure. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
-export class GlobalJson {
-    constructor(version: string | null = null) {
-        if (version != null) {
-            this.sdk = new sdk();
-            this.sdk.version = version;
-        }
-    }
-    public sdk: sdk;
+// Gets the patch version from an global.json SDK version.
+function getPatchVersion(version: number[]) : number {
+    // Version is in format x.y.znn where nn is the patch version.
+    assert(version.length === 3);
+    assert(version[2] >= 100 && version[3] <= 999);
+    return version[2] % 100;
 }
 
-// SDK structure. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
-class sdk {
+// Gets the feature band from an global.json SDK version.
+function getFeatureBand(version: number[]) : number {
+    // Version is in format x.y.znn where z is the feature band.
+    assert(version.length === 3);
+    assert(version[2] >= 100 && version[3] <= 999);
+    return Math.floor(version[2] / 100);
+}
+
+// GlobalJSON SDK structure. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
+class globalJsonSDK {
     // SDK version.
-    public version: string | null;
+    public version: number[] | null;
+
     // Roll forward policy. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#version
     public rollForward: "patch" | "feature" | "minor" | "major" | "latestPatch" | "latestFeature" | "latestMinor" | "latestMajor" | "disable";
+
     // Allow prerelease versions. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#allowprerelease
     public allowPrerelease: boolean;
+
+    // Checks if this SDK can use the specified SDK version.
+    // @param sdk The SDK version string in the format 'major.minor.patch'.
+    // @param prerelease If the SDK version is a prerelease version.
+    public canUse(sdk: string, prerelease: boolean) : boolean {
+        if (!this.allowPrerelease && prerelease) {
+            // If the allowPrerelease is false, we can't use any prerelease channel.
+            return false;
+        }
+
+        if (this.version == null) {
+            assert(this.rollForward == "latestMajor");
+            // If the version is null, we can use any channel.
+            return true;
+        }
+
+        const version = sdk.split('.').map(parseInt);
+        assert(version.length === 3, 'Invalid sdk');
+
+        // Fall through each type: i.e. validate major, minor, feature and patch versions.
+
+        if (this.rollForward == 'latestMajor') {
+            return version[0] >= this.version[0];
+        }
+
+        // Other than latestMajor, major version must match.
+        if (version[0] != this.version[0]) {
+            return false;
+        }
+
+        // By now, major version matches.
+        if (this.rollForward == 'major') {
+            return true;
+        }
+
+        if (this.rollForward == 'latestMinor') {
+            // If roll forward is minor, we can use any minor version.
+            return version[1] >= this.version[1];
+        }
+
+        // Other than latestMinor, minor version must match.
+        if (version[1] != this.version[1]) {
+            return false;
+        }
+
+        // By now, major and minor versions match.
+        if (this.rollForward == 'minor') {
+            return true;
+        }
+
+        if (this.rollForward == 'latestFeature') {
+            // If roll forward is feature, we can use any feature band.
+            return getFeatureBand(version) >= getFeatureBand(this.version);
+        }
+
+        // Other than latestFeature, feature band must match.
+        if (getFeatureBand(version) != getFeatureBand(this.version)) {
+            return false;
+        }
+
+        // By now, major, minor and feature bands match.
+        if (this.rollForward == 'feature') {
+            return true;
+        }
+
+        if (this.rollForward == 'latestPatch') {
+            // If roll forward is patch, we can use any patch version.
+            return getPatchVersion(version) >= getPatchVersion(this.version);
+        }
+
+        // Other than latestPatch, patch version must match.
+        if (getPatchVersion(version) != getPatchVersion(this.version)) {
+            return false;
+        }
+
+        // By now, major, minor, feature bands and patch versions match.
+        // rollForward must be 'patch' or 'disable'.
+        assert(this.rollForward == "patch" || this.rollForward == "disable");
+
+        return true;
+    }
 }
