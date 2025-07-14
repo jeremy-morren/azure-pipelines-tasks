@@ -223,7 +223,11 @@ export function testParseGlobalJson() {
         `{ sdk: { rollForward: "latest" } }`);
 
     // Test with major.minor
-    Array(rollForwardPolicy.major, rollForwardPolicy.minor,rollForwardPolicy.latestMajor,rollForwardPolicy.latestMinor)
+    Array(
+        rollForwardPolicy.major,
+        rollForwardPolicy.minor,
+        rollForwardPolicy.latestMajor,
+        rollForwardPolicy.latestMinor)
         .forEach((rollForward) => {
             const json = `{
                 "sdk": {
@@ -235,7 +239,16 @@ export function testParseGlobalJson() {
         });
 
     // Test with major.minor.patch
-    Array('major','minor','feature','patch','latestMajor','latestMinor','latestFeature','latestPatch','disable')
+    Array(
+        rollForwardPolicy.major,
+        rollForwardPolicy.minor,
+        rollForwardPolicy.feature,
+        rollForwardPolicy.patch,
+        rollForwardPolicy.latestMajor,
+        rollForwardPolicy.latestMinor,
+        rollForwardPolicy.latestFeature,
+        rollForwardPolicy.latestPatch,
+        rollForwardPolicy.disable)
         .forEach((rollForward) => {
             const json = `{
                 /* comment */ "sdk": {
@@ -255,8 +268,8 @@ export function testParseGlobalJson() {
 
     assertSuccess("allowPrerelease should default to true",
         '{ sdk: { version: "5.0", rollForward: "latestMinor" } }',
-        "5.0", "latestMinor", true);
+        "5.0", rollForwardPolicy.latestMinor, true);
     assertSuccess("allowPrerelease should default to true",
         '{ sdk: { version: "5.0", rollForward: "latestMinor", "allowPrerelease": null } }',
-        "5.0", "latestMinor", true);
+        "5.0", rollForwardPolicy.latestMinor, true);
 }
