@@ -184,7 +184,7 @@ export function testParseGlobalJson() {
         if (version == null)
             assert(result.version === null, "Expected version to be null");
         else
-            assert.strictEqual(version, result.version.join('.'), `Expected version to be "${version}. Test: ${test}"`);
+            assert.strictEqual(version, result.version.join('.'), `Expected version to be ${version}. Test: ${test}"`);
         assert.strictEqual(result.rollForward, rollForward, `Expected rollForward to be ${rollForward}. Test: ${test}`);
         assert.strictEqual(result.allowPrerelease, allowPrerelease, `Expected allowPrerelease to be ${allowPrerelease}`);
 
