@@ -81,9 +81,9 @@ export class globalJsonFetcher {
 export function parseGlobalJson(content: string) : globalJsonSDK | string {
     const globalJson = (JSON5.parse(content)) as {
         sdk: {
-            version: string,
-            rollForward?: string | null,
-            allowPrerelease?: boolean | null
+            version?: string | null,
+            rollForward?: string,
+            allowPrerelease?: boolean
         }
     };
     if (globalJson == null || globalJson.sdk == null) {
@@ -94,7 +94,9 @@ export function parseGlobalJson(content: string) : globalJsonSDK | string {
 
     const sdk = globalJson.sdk;
     const versionStr = sdk.version;
-    const allowPrerelease = sdk.allowPrerelease ? sdk.allowPrerelease : true; // Default to true if not specified.
+    const allowPrerelease = sdk.allowPrerelease !== undefined
+        ? sdk.allowPrerelease
+        : true; // Default to true if not specified.
     const rollForward = sdk.rollForward ? sdk.rollForward : 'patch'; // Default to 'patch' if not specified.
 
     if (versionStr == null) {
@@ -104,7 +106,7 @@ export function parseGlobalJson(content: string) : globalJsonSDK | string {
             return new globalJsonSDK(null, rollForwardPolicy.latestMajor, allowPrerelease);
         }
 
-        if (sdk.allowPrerelease) {
+        if (sdk.allowPrerelease !== undefined) {
             // If preRelease is specified, we can use any sdk.
             // Roll forward must be 'latestMajor' or null
             if (sdk.rollForward && sdk.rollForward !== 'latestMajor') {

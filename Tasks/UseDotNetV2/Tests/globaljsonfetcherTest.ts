@@ -205,11 +205,11 @@ export function testParseGlobalJson() {
     assertFailure("it is an empty object", '{}');
     assertFailure("it is an empty sdk object", '{ "sdk": {} }');
 
-    assertSuccess("specify only allowPrerelease should default to latestMajor",
+    assertSuccess("specify only \"allowPrerelease\": true should default to latestMajor",
         '{ "sdk": { "allowPrerelease": true } }',
         null, rollForwardPolicy.latestMajor, true,
         "1.0", true);
-    assertSuccess("specify only allowPrerelease should default to latestMajor",
+    assertSuccess("specify only \"allowPrerelease\": false should default to latestMajor",
         '{ "sdk": { "allowPrerelease": false } }',
         null, rollForwardPolicy.latestMajor, false,
         "10.5", false);
