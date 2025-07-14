@@ -1,4 +1,7 @@
-// "use strict";
+"use strict";
+
+import {globalJsonSDK, rollForwardPolicy} from "../globaljsonfetcher";
+
 // import * as tl from 'azure-pipelines-task-lib/task';
 // import { GlobalJson } from "../globaljsonfetcher";
 // import { Buffer } from "buffer";
@@ -164,3 +167,96 @@
 //         throw "GetVersions shouldn't throw an error if global.json has comments.";
 //     });
 // }
+
+import {parseGlobalJson} from "../globaljsonfetcher";
+import assert = require("node:assert");
+
+export function testParseGlobalJson() {
+
+    const assertSuccess = (test: string,
+                           json: string, version: string | null,
+                           rollForward: rollForwardPolicy,
+                           allowPrerelease: boolean,
+                           canUseSDKVersion: string | null = null,
+                           canUseSDKPrerelease: boolean | null = null) => {
+        const result = parseGlobalJson(json);
+        assert(result instanceof globalJsonSDK, `Expected result to be an instance of globalJsonSDK. Error: ${result}. Test: ${test}`);
+        if (version == null)
+            assert(result.version === null, "Expected version to be null");
+        else
+            assert.strictEqual(version, result.version.join('.'), `Expected version to be "${version}. Test: ${test}"`);
+        assert.strictEqual(result.rollForward, rollForward, `Expected rollForward to be ${rollForward}. Test: ${test}`);
+        assert.strictEqual(result.allowPrerelease, allowPrerelease, `Expected allowPrerelease to be ${allowPrerelease}`);
+
+        if (version != null || canUseSDKVersion != null) {
+            const sdkVersion = canUseSDKVersion ?? version;
+            const sdkPrerelease = canUseSDKPrerelease ?? allowPrerelease;
+            assert.strictEqual(result.canUseSDK(sdkVersion, sdkPrerelease), true,
+                `Expected canUseSDK(${sdkVersion}, ${sdkPrerelease}) to be true. Test: ${test}`);
+        }
+    }
+
+    const assertFailure = (reason: string, json: string) => {
+        const result = parseGlobalJson(json);
+        assert(typeof result === 'string', `Expected parseGlobalJson to return an error string because ${reason}`);
+    }
+
+
+    assertFailure("it is an empty object", '{}');
+    assertFailure("it is an empty sdk object", '{ "sdk": {} }');
+
+    assertSuccess("specify only allowPrerelease should default to latestMajor",
+        '{ "sdk": { "allowPrerelease": true } }',
+        null, rollForwardPolicy.latestMajor, true,
+        "1.0", true);
+    assertSuccess("specify only allowPrerelease should default to latestMajor",
+        '{ "sdk": { "allowPrerelease": false } }',
+        null, rollForwardPolicy.latestMajor, false,
+        "10.5", false);
+
+    // Test without version
+    assertSuccess("no version with latestMajor should succeed",
+        `{ sdk: { rollForward: "latestMajor" } }`,
+        null, rollForwardPolicy.latestMajor, true,
+        "1.0", true);
+    assertFailure("no version without latestMajor should fail",
+        `{ sdk: { rollForward: "latest" } }`);
+
+    // Test with major.minor
+    Array(rollForwardPolicy.major, rollForwardPolicy.minor,rollForwardPolicy.latestMajor,rollForwardPolicy.latestMinor)
+        .forEach((rollForward) => {
+            const json = `{
+                "sdk": {
+                    // a comment
+                    "version": "25.1",
+                    "rollForward": "${rollForward}" /* multiline comment */ } }`;
+            assertSuccess(`major.minor with rollForward ${rollForward}`, json,
+                "25.1", rollForward, true);
+        });
+
+    // Test with major.minor.patch
+    Array('major','minor','feature','patch','latestMajor','latestMinor','latestFeature','latestPatch','disable')
+        .forEach((rollForward) => {
+            const json = `{
+                /* comment */ "sdk": {
+                    // a comment
+                    "allowPrerelease": false,
+                    "version": "5.22.890",
+                    "rollForward": "${rollForward}" } 
+                }`;
+            assertSuccess(`major.minor.patch with rollForward ${rollForward}`,
+                json, "5.22.890", rollForward, false);
+
+            Array('7.8.9', '5.22.1001').forEach(version => {
+                assertFailure(`major.minor.patch with rollForward ${rollForward} and invalid patch`,
+                    `{ "sdk": { "version": "${version}", "rollForward": "${rollForward}" } }`);
+            })
+        });
+
+    assertSuccess("allowPrerelease should default to true",
+        '{ sdk: { version: "5.0", rollForward: "latestMinor" } }',
+        "5.0", "latestMinor", true);
+    assertSuccess("allowPrerelease should default to true",
+        '{ sdk: { version: "5.0", rollForward: "latestMinor", "allowPrerelease": null } }',
+        "5.0", "latestMinor", true);
+}
