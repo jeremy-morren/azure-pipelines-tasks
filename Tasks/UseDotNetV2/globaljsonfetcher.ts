@@ -22,34 +22,27 @@ export class globalJsonFetcher {
      * Get all version information from all global.json starting from the working directory without duplicates.
      */
     public async GetVersions(): Promise<VersionInfo[]> {
-        var versionInformation: VersionInfo[] = new Array<VersionInfo>();
-        var versionStrings = this.getVersionStrings();
+        const versionInformation: VersionInfo[] = new Array<VersionInfo>();
+        const versionStrings = this.readSDKs();
         for (let index = 0; index < versionStrings.length; index++) {
             const version = versionStrings[index];
             if (version != null) {
-                var versionInfo = await this.versionFetcher.getVersionInfo(version, null, "sdk", false);
-                versionInformation.push(versionInfo);
+                throw 'NotImplemented';
+                // const versionInfo = await this.versionFetcher.getVersionInfo(version, null, "sdk", false);
+                // versionInformation.push(versionInfo);
             }
         }
 
         return Array.from(new Set(versionInformation)); // this remove all not unique values.
     }
 
-    private getVersionStrings(): Array<string | null> {
+    private readSDKs(): Array<globalJsonSDK | null> {
         let filePathsToGlobalJson = tl.findMatch(this.workingDirectory, "**/global.json");
         if (filePathsToGlobalJson == null || filePathsToGlobalJson.length == 0) {
             throw tl.loc("FailedToFindGlobalJson", this.workingDirectory);
         }
 
-        return filePathsToGlobalJson.map(path => {
-            var content = this.readGlobalJson(path);
-            if (content != null) {
-                tl.message(tl.loc("GlobalJsonSdkVersion", content.sdk.version, path));
-                return content.sdk.version;
-            }
-
-            return null;
-        })
+        return filePathsToGlobalJson.map(path => this.readGlobalJson(path))
             .filter(d => d != null); // remove all global.json that can't read
     }
 
@@ -65,7 +58,15 @@ export class globalJsonFetcher {
                 return null;
             }
 
-            return parseGlobalJson(fileContent.toString(), path);
+            const result = parseGlobalJson(fileContent.toString());
+            if (typeof result === 'string') {
+                // Error parsing. Write a warning and return null
+                tl.warning(tl.loc("FailedToReadGlobalJson", path, result));
+                return null;
+            }
+            // Successfully parsed global.json
+            console.log(tl.loc("GlobalJsonSdkVersion", result.toString(), path));
+            return result;
         } catch (error) {
             // Failed to read global.json, throw an error.
             throw tl.loc("FailedToReadGlobalJson", path, error);
@@ -74,10 +75,9 @@ export class globalJsonFetcher {
 
 }
 
-// Parse the global.json content. Returns a string if the sdk is constant, or an sdk object if the sdk is dynamic.
+// Parse the global.json content. Returns the parsed SDK or an error.
 // @param content The content of the global.json file.
-// @param path The path to the global.json file, only used for logging.
-export function parseGlobalJson(content: string, path: string) : globalJsonSDK | null {
+export function parseGlobalJson(content: string) : globalJsonSDK | string {
     const globalJson = (JSON5.parse(content)) as {
         sdk: {
             version: string,
@@ -86,9 +86,8 @@ export function parseGlobalJson(content: string, path: string) : globalJsonSDK |
         }
     };
     if (globalJson == null || globalJson.sdk == null) {
-        // Invalid global.json, we log a warning and return null.
-        tl.warning(tl.loc("FailedToReadGlobalJson", path));
-        return null;
+        // Input is null
+        return "sdk property not found or null";
     }
     // Parse the input. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#globaljson-schema
 
@@ -111,9 +110,7 @@ export function parseGlobalJson(content: string, path: string) : globalJsonSDK |
             // If preRelease is specified, we can use any sdk.
             // Roll forward must be 'latestMajor' or null
             if (rollForward !== null && rollForward !== 'latestMajor') {
-                tl.debug(`Failed to read global.json ${path}. allowPrerelease is null with invalid rollForward policy: ${rollForward}`);
-                tl.error(tl.loc("FailedToReadGlobalJson", path));
-                return null;
+                return `allowPrerelease is null with invalid rollForward policy: ${rollForward}`
             }
             return {
                 version: null,
@@ -122,17 +119,13 @@ export function parseGlobalJson(content: string, path: string) : globalJsonSDK |
             } as globalJsonSDK;
         }
 
-        // Invalid global.json, we log a warning and return null.
-        tl.debug(`Failed to read global.json ${path}. No version specified`);
-        tl.warning(tl.loc("FailedToReadGlobalJson", path));
-        return null;
+        // No version specified.
+        return 'No version specified';
     }
     const version = versionStr.split('.').map(parseInt);
     if (version.length < 2 || version.length > 3) {
         // Invalid version format. Must be in the form of 'major.minor' or 'major.minor.patch'.
-        tl.debug(`Failed to read global.json ${path}. Invalid version format: ${version}`);
-        tl.error(tl.loc("FailedToReadGlobalJson", path));
-        return null;
+        return `Invalid version format: ${version}`;
     }
 
     switch (rollForward) {
@@ -156,9 +149,7 @@ export function parseGlobalJson(content: string, path: string) : globalJsonSDK |
             // Version should be in format x.y.znn
             if (version.length !== 3 || version[2] < 100 || version[2] > 999) {
                 // Invalid version format. Must be in the form of 'major.minor.patch'.
-                tl.debug(`Failed to read global.json ${path}. Invalid version format for rollForward policy ${rollForward}: ${version}`);
-                tl.error(tl.loc("FailedToReadGlobalJson", path));
-                return null;
+                return `Invalid version format for rollForward policy ${rollForward}: ${version}`
             }
             return {
                 version: version,
@@ -200,10 +191,15 @@ class globalJsonSDK {
     // Allow prerelease versions. See https://learn.microsoft.com/en-us/dotnet/core/tools/global-json#allowprerelease
     public allowPrerelease: boolean;
 
+    public toString() : string {
+        const version = this.version ? this.version.join('.') : 'null';
+        return `{ version: ${version}, rollForward: ${this.rollForward}, allowPrerelease: ${this.allowPrerelease} }`;
+    }
+
     // Checks if this SDK can use the specified SDK version.
     // @param sdk The SDK version string in the format 'major.minor.patch'.
     // @param prerelease If the SDK version is a prerelease version.
-    public canUse(sdk: string, prerelease: boolean) : boolean {
+    public canUseSDK(sdk: string, prerelease: boolean) : boolean {
         if (!this.allowPrerelease && prerelease) {
             // If the allowPrerelease is false, we can't use any prerelease channel.
             return false;
