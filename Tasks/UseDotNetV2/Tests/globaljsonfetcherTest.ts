@@ -177,22 +177,61 @@ export function testParseGlobalJson() {
                            json: string, version: string | null,
                            rollForward: rollForwardPolicy,
                            allowPrerelease: boolean,
-                           canUseSDKVersion: string | null = null,
-                           canUseSDKPrerelease: boolean | null = null) => {
+                           canUseVersion: string[] = null,
+                           cannotUseVersion: string[] = null,
+                           canUseChannel: string[] = null,
+                           cannotUseChannel: string[] = null) => {
         const result = parseGlobalJson(json);
         assert(result instanceof globalJsonSDK, `Expected result to be an instance of globalJsonSDK. Error: ${result}. Test: ${test}`);
-        if (version == null)
+        if (version == null) {
             assert(result.version === null, "Expected version to be null");
-        else
-            assert.strictEqual(version, result.version.join('.'), `Expected version to be ${version}. Test: ${test}"`);
+            assert(result.sdkVersion === null, "Expected sdkVersion to be null");
+        }
+        else {
+            assert.strictEqual(version, result.version, `Expected version to be ${version}. Test: ${test}`);
+            assert.strictEqual(result.sdkVersion.equals(version), true, `Expected sdkVersion to be ${version}. Test: ${test}`);
+        }
         assert.strictEqual(result.rollForward, rollForward, `Expected rollForward to be ${rollForward}. Test: ${test}`);
         assert.strictEqual(result.allowPrerelease, allowPrerelease, `Expected allowPrerelease to be ${allowPrerelease}`);
 
-        if (version != null || canUseSDKVersion != null) {
-            const sdkVersion = canUseSDKVersion ?? version;
-            const sdkPrerelease = canUseSDKPrerelease ?? allowPrerelease;
-            assert.strictEqual(result.canUseSDK(sdkVersion, sdkPrerelease), true,
-                `Expected canUseSDK(${sdkVersion}, ${sdkPrerelease}) to be true. Test: ${test}`);
+        if (version) {
+            assert.strictEqual(result.canUseVersion(version, false), true,
+                `Expected canUseSDK(${version}, false) to be true. Test: ${test}`);
+            assert.strictEqual(result.canUseVersion(version, true), allowPrerelease,
+                `Expected canUseSDK(${version}, true) to be ${allowPrerelease}. Test: ${test}`);
+        }
+
+        if (canUseVersion) {
+            canUseVersion.forEach((v) => {
+                assert.strictEqual(result.canUseVersion(v, false), true,
+                    `Expected canUseSDK(${v}, false) to be true. Test: ${test}`);
+                assert.strictEqual(result.canUseVersion(v, true), allowPrerelease,
+                    `Expected canUseSDK(${v}, true) to be ${allowPrerelease}. Test: ${test}`);
+            });
+        }
+        if (cannotUseVersion) {
+            cannotUseVersion.forEach((v) => {
+                assert.strictEqual(result.canUseVersion(v, false), false,
+                    `Expected canUseSDK(${v}, false) to be false. Test: ${test}`);
+                assert.strictEqual(result.canUseVersion(v, true), false,
+                    `Expected canUseSDK(${v}, true) to be false. Test: ${test}`);
+            });
+        }
+        if (canUseChannel) {
+            canUseChannel.forEach((v) => {
+                assert.strictEqual(result.canUseChannel(v, false), true,
+                    `Expected canUseChannel(${v}, false) to be true. Test: ${test}`);
+                assert.strictEqual(result.canUseChannel(v, true), allowPrerelease,
+                    `Expected canUseChannel(${v}, true) to be ${allowPrerelease}. Test: ${test}`);
+            });
+        }
+        if (cannotUseChannel) {
+            cannotUseChannel.forEach((v) => {
+                assert.strictEqual(result.canUseChannel(v, false), false,
+                    `Expected canUseChannel(${v}, false) to be false. Test: ${test}`);
+                assert.strictEqual(result.canUseChannel(v, true), false,
+                    `Expected canUseChannel(${v}, true) to be false. Test: ${test}`);
+            });
         }
     }
 
@@ -201,24 +240,23 @@ export function testParseGlobalJson() {
         assert(typeof result === 'string', `Expected parseGlobalJson to return an error string because ${reason}`);
     }
 
-
     assertFailure("it is an empty object", '{}');
     assertFailure("it is an empty sdk object", '{ "sdk": {} }');
 
     assertSuccess("specify only \"allowPrerelease\": true should default to latestMajor",
         '{ "sdk": { "allowPrerelease": true } }',
         null, rollForwardPolicy.latestMajor, true,
-        "1.0", true);
+        ["1.0.100"]);
     assertSuccess("specify only \"allowPrerelease\": false should default to latestMajor",
         '{ "sdk": { "allowPrerelease": false } }',
         null, rollForwardPolicy.latestMajor, false,
-        "10.5", false);
+        ["10.5.200"]);
 
     // Test without version
     assertSuccess("no version with latestMajor should succeed",
         `{ sdk: { rollForward: "latestMajor" } }`,
         null, rollForwardPolicy.latestMajor, true,
-        "1.0", true);
+        ["1.0.245" ]);
     assertFailure("no version without latestMajor should fail",
         `{ sdk: { rollForward: "latest" } }`);
 
@@ -234,8 +272,7 @@ export function testParseGlobalJson() {
                     // a comment
                     "version": "25.1",
                     "rollForward": "${rollForward}" /* multiline comment */ } }`;
-            assertSuccess(`major.minor with rollForward ${rollForward}`, json,
-                "25.1", rollForward, true);
+            assertFailure("major.minor without version should fail", json);
         });
 
     // Test with major.minor.patch
@@ -255,7 +292,7 @@ export function testParseGlobalJson() {
                     // a comment
                     "allowPrerelease": false,
                     "version": "5.22.890",
-                    "rollForward": "${rollForward}" } 
+                    "rollForward": "${rollForward}" }  // comment
                 }`;
             assertSuccess(`major.minor.patch with rollForward ${rollForward}`,
                 json, "5.22.890", rollForward, false);
@@ -267,9 +304,85 @@ export function testParseGlobalJson() {
         });
 
     assertSuccess("allowPrerelease should default to true",
-        '{ sdk: { version: "5.0", rollForward: "latestMinor" } }',
-        "5.0", rollForwardPolicy.latestMinor, true);
+        '{ sdk: { version: "5.0.200", rollForward: "latestMinor" } }',
+        "5.0.200", rollForwardPolicy.latestMinor, true);
     assertSuccess("allowPrerelease should default to true",
-        '{ sdk: { version: "5.0", rollForward: "latestMinor", "allowPrerelease": null } }',
-        "5.0", rollForwardPolicy.latestMinor, true);
+        '{ sdk: { version: "4.2.400", rollForward: "latestMinor", "allowPrerelease": null } }',
+        "4.2.400", rollForwardPolicy.latestMinor, true);
+
+    // Assert each rollForward policy works as expected
+
+    // NB: 'patch' is special (legacy behaviour):
+    // canUseVersion is true for exact match only,
+    // getDownloadVersion returns latest version of any channel if no exact match.
+
+    // For all others: rollForward and latestRollForward are the same for canUseVersion.
+    // getDownloadVersion differs: for rollForward it uses the matching version if found, otherwise rolls forward.
+    // For latestRollForward it always rolls forward.
+
+    Array(rollForwardPolicy.disable, rollForwardPolicy.patch)
+        .forEach(rollForward => {
+            assertSuccess(`rollForward ${rollForward}`,
+                `{ sdk: {version: "5.1.509", rollForward: "${rollForward}" } }`,
+                "5.1.509", rollForward, true,
+
+                // Exact match only
+                ["5.1.509" ],
+                ["4.6.509", "5.1.100", "5.1.600", "6.1.509" ],
+
+                ["5.1"],
+                ["4.1", "5.0", "5.2", "6.2"]);
+        });
+
+    assertSuccess('rollForward latestPatch',
+        '{ sdk: {version: "5.3.509", rollForward: "latestPatch", "allowPrerelease": false } }',
+        "5.3.509", rollForwardPolicy.latestPatch, false,
+
+        ["5.3.509", "5.3.580", "5.3.599" ],
+        ["4.6.509", "5.2.509", "5.3.508" ],
+
+        ["5.3"],
+        ["4.1", "5.0", "5.2", "6.1" ]
+    );
+
+    Array(rollForwardPolicy.feature, rollForwardPolicy.latestFeature)
+        .forEach(rollForward => {
+            assertSuccess(`rollForward ${rollForward}`,
+                `{ sdk: {version: "5.1.509", rollForward: "${rollForward}" } }`,
+                "5.1.509", rollForward, true,
+
+                ["5.1.509", "5.1.510", "5.1.800", "5.1.909" ],
+                [ "4.6.509", "5.1.100", "5.1.508", "6.1.509" ],
+
+                ["5.1"],
+                ["4.1", "5.0", "5.2", "6.1", "6.2" ]
+            );
+        });
+
+    Array(rollForwardPolicy.minor, rollForwardPolicy.latestMinor)
+        .forEach(rollForward => {
+            assertSuccess(`rollForward ${rollForward}`,
+                `{ sdk: {version: "6.2.452", rollForward: "${rollForward}" } }`,
+                "6.2.452", rollForward, true,
+                ["6.2.452", "6.2.600", "6.5.100" ],
+                ["5.1.509", "6.0.100", "7.2.452" ],
+
+                ["6.2", "6.4", "6.10"],
+                ["5.1", "5.0", "6.0", "7.1" ]
+            );
+        });
+
+    Array(rollForwardPolicy.major, rollForwardPolicy.latestMajor)
+        .forEach(rollForward => {
+            assertSuccess(`rollForward ${rollForward}`,
+                `{ sdk: {version: "5.1.509", rollForward: "${rollForward}" } }`,
+                "5.1.509", rollForward, true,
+
+                ["5.2.100", "5.5.800", "10.8.568" ],
+                ["3.1.800", "5.0.204" ],
+
+                ["5.1", "5.2", "6.0", "6.1"],
+                ["4.0", "4.9", "5.0"]
+            );
+        });
 }
