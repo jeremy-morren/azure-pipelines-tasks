@@ -1,0 +1,222 @@
+Upstream implementation instructions
+=====================================
+Target repository: https://github.com/microsoft/azure-pipelines-coveragepublisher
+(NOT this repository. This file documents the C# change needed there so that the
+"arguments" input added to PublishCodeCoverageResultsV2 in azure-pipelines-tasks
+actually takes effect. It is not itself buildable/testable from azure-pipelines-tasks.)
+
+Context
+-------
+PublishCodeCoverageResultsV2 (in microsoft/azure-pipelines-tasks) does not invoke
+ReportGenerator directly. It shells out to a prebuilt binary, CoveragePublisher.Console,
+whose source lives in this separate repo. Tasks/Common/coveragepublisher/make.json
+downloads a release zip of it from an external URL at build time.
+
+Inside that binary, HTML report generation calls the ReportGenerator.Core NuGet
+library IN-PROCESS (src/CoveragePublisher/Parsers/CoverageParserTools/ReportGeneratorTool.cs),
+not as a subprocess:
+
+    var reportGeneratorConfig = new ReportConfigurationBuilder().Create(
+        new Dictionary<string, string>() {
+            { "targetdir", Configuration.ReportDirectory },
+            { "sourcedirs", string.IsNullOrEmpty(Configuration.SourceDirectory) ? "" : Configuration.SourceDirectory },
+            { "reporttypes", "HtmlInline_AzurePipelines" }   // <-- current hardcoded default
+        });
+
+The console app's CLI surface (src/CoveragePublisher/ArgumentsProcessor.cs) only
+recognizes a fixed set of options today: positional coverage files, --reportDirectory,
+--sourceDirectory, --timeout, --noTelemetry. It uses CommandLineParser (2.9.1), which
+errors on unrecognized options rather than ignoring them.
+
+ReportGenerator's own CLI parser only accepts arguments in the exact form:
+
+    -key:value        (single leading dash, key is 2+ letters, colon, then value)
+
+This is enforced by this regex in ReportGenerator itself
+(src/ReportGenerator.Core/CommandLineArgumentNames.cs, danielpalme/ReportGenerator):
+
+    new Regex("^-(?<key>[a-zA-Z]{2,}):(?<value>.+)$", RegexOptions.Compiled)
+
+No "--key:value", "-key=value", or "/key:value" forms are supported by ReportGenerator.
+The internal ReportConfigurationBuilder.Create(string[] args) overload that parses raw
+CLI tokens like this is `internal`, not `public`, so it cannot be called directly from
+CoveragePublisher.Console's assembly -- CoveragePublisher.Console must do its own
+tokenizing and call the public Create(Dictionary<string,string>) overload instead
+(which is exactly what ReportGeneratorTool.cs already does today).
+
+Goal
+----
+Let callers pass additional ReportGenerator arguments (in "-key:value" form) through
+CoveragePublisher.Console. Any user-supplied key -- notably "-reporttypes:" -- must
+replace the task's own hardcoded default for that key rather than being combined with
+it (ReportGenerator's Dictionary-based config can only hold one value per key anyway,
+so "replace" is really "last write wins" applied deliberately instead of accidentally).
+
+Changes required
+----------------
+
+1) src/CoveragePublisher/Model/PublisherConfiguration.cs
+
+   Add a new virtual property alongside the existing ones (ReportDirectory,
+   SourceDirectory, etc). Current file (verbatim) is:
+
+       public class PublisherConfiguration
+       {
+           virtual public IList<string> CoverageFiles { get; set; }
+           virtual public string ReportDirectory { get; set; }
+           virtual public string SourceDirectory { get; set; }
+           virtual public bool GenerateHTMLReport { get { return !string.IsNullOrEmpty(ReportDirectory); } }
+           virtual public int TimeoutInSeconds { get; set; }
+           virtual public bool DisableTelemetry { get; set; }
+       }
+
+   Add:
+
+       /// <summary>
+       /// Additional ReportGenerator arguments, in "-key:value" form, space separated.
+       /// Merged into the ReportGenerator configuration built by ReportGeneratorTool,
+       /// with these values taking precedence over the task's own defaults (targetdir,
+       /// sourcedirs, reporttypes) for any key supplied here.
+       /// </summary>
+       virtual public string ReportGeneratorArguments { get; set; }
+
+2) src/CoveragePublisher/ArgumentsProcessor.cs
+
+   Add a new [Option] to the Options class (verbatim current file already shown in
+   this repo's PR discussion; the Options class overrides PublisherConfiguration
+   properties with [Option]/[Value] attributes). Add, next to the SourceDirectory
+   option:
+
+       [Option("reportGeneratorArgs", Default = "", HelpText = "Additional arguments (in \"-key:value\" form, space separated) to forward to ReportGenerator when generating the HTML report.")]
+       override public string ReportGeneratorArguments { get; set; }
+
+3) src/CoveragePublisher/Parsers/CoverageParserTools/ReportGeneratorTool.cs
+
+   Replace the Dictionary literal construction in GenerateHTMLReport() so that
+   Configuration.ReportGeneratorArguments is parsed and merged in, overriding any
+   default with the same key. Current method:
+
+       public void GenerateHTMLReport()
+       {
+           TraceLogger.Debug("ReportGeneratorTool.CreateHTMLReportFromParserResult: Creating HTML report.");
+
+           if (!Directory.Exists(Configuration.ReportDirectory))
+           {
+               Directory.CreateDirectory(Configuration.ReportDirectory);
+           }
+
+           var reportGeneratorConfig = new ReportConfigurationBuilder().Create(new Dictionary<string, string>() {
+               { "targetdir", Configuration.ReportDirectory },
+               { "sourcedirs", string.IsNullOrEmpty(Configuration.SourceDirectory) ? "" : Configuration.SourceDirectory },
+               { "reporttypes", "HtmlInline_AzurePipelines" }
+           });
+
+           var generator = new Generator();
+
+           generator.GenerateReport(reportGeneratorConfig, new Settings(), new RiskHotspotsAnalysisThresholds(), _parserResult);
+       }
+
+   Change to:
+
+       private static readonly Regex ReportGeneratorArgumentRegex =
+           new Regex(@"-(?<key>[a-zA-Z]{2,}):(?<value>""[^""]*""|\S+)", RegexOptions.Compiled);
+
+       /// <summary>
+       /// Parses a "-key:value -key2:value2 ..." string (ReportGenerator's own command line
+       /// syntax) into a case-insensitive dictionary. Quoted values ("...") are supported so a
+       /// value may contain spaces; unquoted values may not.
+       /// </summary>
+       private static Dictionary<string, string> ParseReportGeneratorArguments(string arguments)
+       {
+           var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+           if (string.IsNullOrWhiteSpace(arguments))
+           {
+               return result;
+           }
+
+           foreach (Match match in ReportGeneratorArgumentRegex.Matches(arguments))
+           {
+               var value = match.Groups["value"].Value;
+               if (value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"')
+               {
+                   value = value.Substring(1, value.Length - 2);
+               }
+
+               result[match.Groups["key"].Value] = value;
+           }
+
+           return result;
+       }
+
+       public void GenerateHTMLReport()
+       {
+           TraceLogger.Debug("ReportGeneratorTool.CreateHTMLReportFromParserResult: Creating HTML report.");
+
+           if (!Directory.Exists(Configuration.ReportDirectory))
+           {
+               Directory.CreateDirectory(Configuration.ReportDirectory);
+           }
+
+           // Task defaults first, then merge in caller-supplied arguments so that e.g. a
+           // user-supplied -reporttypes: replaces the default instead of being combined with it.
+           var reportGeneratorSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
+               { "targetdir", Configuration.ReportDirectory },
+               { "sourcedirs", string.IsNullOrEmpty(Configuration.SourceDirectory) ? "" : Configuration.SourceDirectory },
+               { "reporttypes", "HtmlInline_AzurePipelines" }
+           };
+
+           foreach (var kvp in ParseReportGeneratorArguments(Configuration.ReportGeneratorArguments))
+           {
+               reportGeneratorSettings[kvp.Key] = kvp.Value;
+           }
+
+           var reportGeneratorConfig = new ReportConfigurationBuilder().Create(reportGeneratorSettings);
+
+           var generator = new Generator();
+
+           generator.GenerateReport(reportGeneratorConfig, new Settings(), new RiskHotspotsAnalysisThresholds(), _parserResult);
+       }
+
+   Add `using System.Text.RegularExpressions;` to the file's usings if not already present.
+
+   Note this deliberately overrides ANY key the caller supplies (targetdir, sourcedirs,
+   verbosity, tag, title, license, assemblyfilters, ...), not just reporttypes -- that
+   matches ReportGenerator's own single-value-per-key semantics and is the simplest
+   correct behavior; reporttypes is just the case the azure-pipelines-tasks side asked
+   about specifically.
+
+4) Tests
+
+   Add/extend unit tests (see src/CoveragePublisher.Tests or equivalent) covering:
+   - ReportGeneratorArguments left empty/null -> behavior unchanged (existing tests
+     should still pass unmodified).
+   - ReportGeneratorArguments = "-verbosity:Verbose" -> reporttypes default is still
+     HtmlInline_AzurePipelines, and verbosity is passed through.
+   - ReportGeneratorArguments = "-reporttypes:Cobertura" -> the default
+     HtmlInline_AzurePipelines is replaced by Cobertura (only one reporttypes value
+     reaches ReportConfigurationBuilder).
+   - A quoted value with spaces, e.g. "-title:\"My Report\"", parses correctly.
+   - ArgumentsProcessor: passing --reportGeneratorArgs on the CLI reaches
+     PublisherConfiguration.ReportGeneratorArguments unchanged.
+
+Release / integration implications (read before merging either side)
+----------------------------------------------------------------------
+- This is a two-repo change. The azure-pipelines-tasks side (PublishCodeCoverageResultsV2
+  task.json's new "arguments" input, and Tasks/Common/coveragepublisher/coveragepublisher.ts
+  forwarding it as `--reportGeneratorArgs <value>`) has already been implemented and can
+  merge independently, but it has NO EFFECT -- and will actively BREAK the task if used --
+  until this upstream change ships. CommandLineParser rejects unknown options, so any
+  pipeline author who fills in the new "arguments" input before the new
+  CoveragePublisher.Console release is live will see PublishCodeCoverageResultsV2 fail
+  with a command-line parsing error.
+- After this change is merged and released here (new CoveragePublisher.zip published),
+  someone needs to update the `url` in azure-pipelines-tasks'
+  Tasks/Common/coveragepublisher/make.json to point at the new release zip, then bump
+  Tasks/Common/coveragepublisher/package.json's version and the corresponding
+  coveragepublisher-<version>.tgz references in
+  Tasks/PublishCodeCoverageResultsV2/package.json and package-lock.json (that package
+  was already bumped 1.1.2 -> 1.1.3 as part of the TS-side change; bump again if this
+  C# change ships after that).
+- Until then, treat the V2 "arguments" input's helpMarkDown/README wording as aspirational
+  documentation of the target behavior, not a guarantee of current behavior.

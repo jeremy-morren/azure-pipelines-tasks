@@ -7,13 +7,13 @@ import * as path from 'path';
 import * as UUID from 'uuid/v4';
 import {execSync} from 'child_process';
 
-export async function PublishCodeCoverage(inputFiles: string[], sourceDirectory?: string) {
+export async function PublishCodeCoverage(inputFiles: string[], sourceDirectory?: string, reportGeneratorArguments?: string) {
     var reportDirectory = path.join(getTempFolder(), UUID());
     fs.mkdirSync(reportDirectory);
-    publishCoverage(inputFiles, reportDirectory, sourceDirectory)
+    publishCoverage(inputFiles, reportDirectory, sourceDirectory, reportGeneratorArguments)
 }
 
-async function publishCoverage(inputFiles: string[], reportDirectory: string, pathToSources?: string) {
+async function publishCoverage(inputFiles: string[], reportDirectory: string, pathToSources?: string, reportGeneratorArguments?: string) {
 
     if(!inputFiles || inputFiles.length == 0) {
         taskLib.setResult(taskLib.TaskResult.Failed, taskLib.loc("NoInputFiles"));
@@ -22,6 +22,7 @@ async function publishCoverage(inputFiles: string[], reportDirectory: string, pa
 
     const osvar = process.platform;
     let dotnet: toolRunner.ToolRunner;
+    let toolDisplayPath: string;
 
     const dotnetPath = taskLib.which('dotnet', false);
     if (!dotnetPath && osvar !== 'win32') {
@@ -31,14 +32,16 @@ async function publishCoverage(inputFiles: string[], reportDirectory: string, pa
 
     if (osvar === 'win32') {
         // use full .NET to execute
-        dotnet = taskLib.tool(path.join(__dirname, 'CoveragePublisher', 'CoveragePublisher.Console.exe'));
-    } 
+        toolDisplayPath = path.join(__dirname, 'CoveragePublisher', 'CoveragePublisher.Console.exe');
+        dotnet = taskLib.tool(toolDisplayPath);
+    }
     else if(osvar==='linux')
     {
          // use full .NET to execute
         var filepath=path.join(__dirname, 'CoveragePublisher','linux-x64', 'CoveragePublisher.Console');
         execSync('chmod +x '+filepath);
         dotnet=taskLib.tool(filepath);
+        toolDisplayPath = filepath;
     }
     else if(osvar==='darwin')
     {
@@ -46,22 +49,41 @@ async function publishCoverage(inputFiles: string[], reportDirectory: string, pa
         var filepath=path.join(__dirname, 'CoveragePublisher', 'osx-x64', 'CoveragePublisher.Console');
         execSync('chmod +x '+filepath);
         dotnet=taskLib.tool(filepath);
+        toolDisplayPath = filepath;
     }
     else{
+        const dllPath = path.join(__dirname, "CoveragePublisher", 'CoveragePublisher.Console.dll');
         dotnet = taskLib.tool(dotnetPath);
-        dotnet.arg(path.join(__dirname, "CoveragePublisher", 'CoveragePublisher.Console.dll'));
+        dotnet.arg(dllPath);
+        toolDisplayPath = dotnetPath + ' ' + dllPath;
     }
+
+    const displayArgs: string[] = [];
 
     for (const inputFile of inputFiles) {
         dotnet.arg(inputFile);
+        displayArgs.push(inputFile);
     }
     dotnet.arg('--reportDirectory');
     dotnet.arg(reportDirectory);
+    displayArgs.push('--reportDirectory', reportDirectory);
 
     if(!isNullOrWhitespace(pathToSources)) {
         dotnet.arg('--sourceDirectory');
         dotnet.arg(pathToSources);
+        displayArgs.push('--sourceDirectory', pathToSources);
     }
+
+    // Forwarded to ReportGenerator by CoveragePublisher.Console. Requires a CoveragePublisher.Console
+    // release that understands --reportGeneratorArgs (see azure-pipelines-coveragepublisher); on older
+    // releases this will fail command line parsing with an "unknown option" error.
+    if(!isNullOrWhitespace(reportGeneratorArguments)) {
+        dotnet.arg('--reportGeneratorArgs');
+        dotnet.arg(reportGeneratorArguments);
+        displayArgs.push('--reportGeneratorArgs', reportGeneratorArguments);
+    }
+
+    console.log('##[command]' + toolDisplayPath + ' ' + displayArgs.join(' '));
 
     try {
         // Get comprehensive proxy configuration to fix .NET HttpClient proxy issues

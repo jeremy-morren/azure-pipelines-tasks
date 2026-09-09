@@ -16,7 +16,7 @@
   "author": "Microsoft Corporation",
   "version": {
     "Major": 2,
-    "Minor": 279,
+    "Minor": 277,
     "Patch": 0
   },
   "demands": [],
@@ -46,6 +46,14 @@
       "defaultValue": "false",
       "required": false,
       "helpMarkDown": "Fail the task if code coverage did not produce any results to publish."
+    },
+    {
+      "name": "arguments",
+      "type": "string",
+      "label": "Additional arguments for ReportGenerator",
+      "defaultValue": "",
+      "required": false,
+      "helpMarkDown": "Additional arguments to pass to ReportGenerator when generating the HTML report, e.g. `-verbosity:Verbose`, `-reporttypes:HtmlInline_AzurePipelines_Dark`. Each argument must be in the `-key:value` form that ReportGenerator's command line accepts. See the [ReportGenerator documentation](https://github.com/danielpalme/ReportGenerator) for the full list of supported arguments."
     }
   ],
   "execution": {

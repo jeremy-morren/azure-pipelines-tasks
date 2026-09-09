@@ -10,3 +10,5 @@ The Publish Code Coverage Results task is used to publish the code coverage resu
 - **Path to Source Files:**		The file path specifying the location of source files, this is required for generating HTML reports in case of tools which put relative paths in their summary files.
 
 - **Fail when code coverage files are not found:**		Fail the task if the summary file patterns yielded no coverage files.
+
+- **Additional arguments for ReportGenerator:**		Additional `-key:value` arguments to pass to ReportGenerator when generating the HTML report, e.g. `-verbosity:Verbose`. Supplying a `-reporttypes:` argument here replaces the task's default (`-reporttypes:HtmlInline_AzurePipelines`) instead of being combined with it.
